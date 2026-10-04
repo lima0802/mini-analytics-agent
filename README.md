@@ -1,2 +1,1 @@
-# mini-analytics-agent
-Mini text-to-SQL agent on Snowflake with LangGraph, evals, and CI/CD. Synthetic data.
+Governed text-to-SQL analytics agent on Snowflake with LangGraph, evaluation and CI/CD. Learning project on synthetic data.
