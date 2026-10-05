@@ -1,0 +1,156 @@
+# semantic_model.yaml
+# The agent's map of the data: the ONLY tables it may query, what columns mean,
+# how tables join, how metrics are defined, what people call things, and verified examples.
+# Structure is modelled on Snowflake Cortex Analyst semantic models, simplified.
+# All data is synthetic (see sql/00_seed.sql).
+
+name: email_marketing
+description: >
+  Synthetic email-marketing data (SFMC-style). One row per email send, with delivery
+  and engagement counts per send. Q3 2026 (2026-07-01 to 2026-09-30).
+
+tables:
+  - name: email_sends
+    base_table: MINI_AGENT.DEV.EMAIL_SENDS
+    description: One row per email send (a campaign email sent to a list on one day).
+    primary_key: send_sk
+    dimensions:
+      - name: business_unit
+        expr: business_unit
+        data_type: string
+        description: Country business unit that sent the email.
+        synonyms: [market, country, BU, region code]
+        sample_values: [BU_UK, BU_DE, BU_FR, BU_NL, BU_SE, BU_ES, BU_IT, BU_PL]
+      - name: email_type
+        expr: email_type
+        data_type: string
+        description: Kind of email.
+        synonyms: [campaign type, email category, message type]
+        sample_values: [Newsletter, Promotional, Triggered, Transactional]
+      - name: owner_email
+        expr: owner_email
+        data_type: string
+        description: Email of the person who owns the send. Masked for non-admin roles.
+    time_dimensions:
+      - name: send_date
+        expr: send_date
+        data_type: date
+        description: Date the email was sent.
+        synonyms: [date, day, sent on]
+
+  - name: send_performance
+    base_table: MINI_AGENT.DEV.SEND_PERFORMANCE
+    description: Delivery and engagement counts, one row per send.
+    primary_key: send_sk
+    facts:
+      - name: sent
+        expr: sent
+        data_type: number
+        description: Emails sent (attempted).
+        synonyms: [volume, emails sent, send volume]
+      - name: delivered
+        expr: delivered
+        data_type: number
+        description: Emails delivered to the inbox (sent minus bounces).
+      - name: bounces
+        expr: bounces
+        data_type: number
+        description: Emails that could not be delivered.
+      - name: opens
+        expr: opens
+        data_type: number
+        description: Emails opened.
+      - name: clicks
+        expr: clicks
+        data_type: number
+        description: Emails with at least one click.
+      - name: unsubscribes
+        expr: unsubscribes
+        data_type: number
+        description: Recipients who unsubscribed from this send.
+        synonyms: [opt-outs, unsubs]
+
+relationships:
+  - name: sends_to_performance
+    left_table: email_sends
+    right_table: send_performance
+    join_type: inner
+    relationship_type: one_to_one
+    on: email_sends.send_sk = send_performance.send_sk
+
+# Metrics are defined once here so the LLM never invents its own formula.
+# NULLIF avoids division by zero.
+metrics:
+  - name: open_rate
+    expr: SUM(send_performance.opens) / NULLIF(SUM(send_performance.delivered), 0)
+    description: Share of delivered emails that were opened.
+    synonyms: [OR, open %, open percentage]
+  - name: click_rate
+    expr: SUM(send_performance.clicks) / NULLIF(SUM(send_performance.delivered), 0)
+    description: Share of delivered emails that were clicked.
+    synonyms: [CTR, click-through rate]
+  - name: click_to_open_rate
+    expr: SUM(send_performance.clicks) / NULLIF(SUM(send_performance.opens), 0)
+    description: Share of opened emails that were clicked.
+    synonyms: [CTOR, click to open]
+  - name: bounce_rate
+    expr: SUM(send_performance.bounces) / NULLIF(SUM(send_performance.sent), 0)
+    description: Share of sent emails that bounced.
+  - name: number_of_sends
+    expr: COUNT(DISTINCT email_sends.send_sk)
+    description: >
+      Number of send events (campaign emails), NOT number of emails. "How many sends" is
+      ambiguous: it can mean this metric or SUM(sent). Ask the user if unclear.
+
+# Verified queries: question -> SQL pairs checked by a human. They are few-shot examples
+# for the LLM and (on Wednesday) seeds for the golden eval set.
+verified_queries:
+  - name: open_rate_by_bu
+    question: What was the open rate by business unit?
+    verified_by: Li
+    verified_at: 2026-10-05
+    sql: |
+      SELECT s.business_unit,
+             SUM(p.opens) / NULLIF(SUM(p.delivered), 0) AS open_rate
+      FROM MINI_AGENT.DEV.EMAIL_SENDS s
+      JOIN MINI_AGENT.DEV.SEND_PERFORMANCE p ON s.send_sk = p.send_sk
+      GROUP BY s.business_unit
+      ORDER BY open_rate DESC
+      LIMIT 100
+
+  - name: monthly_volume
+    question: How many emails were sent per month?
+    verified_by: Li
+    verified_at: 2026-10-05
+    sql: |
+      SELECT DATE_TRUNC('month', s.send_date) AS month,
+             SUM(p.sent) AS emails_sent
+      FROM MINI_AGENT.DEV.EMAIL_SENDS s
+      JOIN MINI_AGENT.DEV.SEND_PERFORMANCE p ON s.send_sk = p.send_sk
+      GROUP BY month
+      ORDER BY month
+      LIMIT 100
+
+  - name: top_email_types_ctor
+    question: Which 3 email types have the highest click-to-open rate?
+    verified_by: Li
+    verified_at: 2026-10-05
+    sql: |
+      SELECT s.email_type,
+             SUM(p.clicks) / NULLIF(SUM(p.opens), 0) AS click_to_open_rate
+      FROM MINI_AGENT.DEV.EMAIL_SENDS s
+      JOIN MINI_AGENT.DEV.SEND_PERFORMANCE p ON s.send_sk = p.send_sk
+      GROUP BY s.email_type
+      ORDER BY click_to_open_rate DESC
+      LIMIT 3
+
+  - name: delivered_bu_de_august_2026
+    question: How many emails were delivered in BU_DE in August 2026?
+    sql: |
+      SELECT SUM(p.delivered) AS emails_delivered
+      FROM MINI_AGENT.DEV.EMAIL_SENDS s
+      JOIN MINI_AGENT.DEV.SEND_PERFORMANCE p ON s.send_sk = p.send_sk
+      WHERE s.business_unit = 'BU_DE'
+        AND s.send_date >= '2026-08-01'::DATE
+        AND s.send_date < '2026-09-01'::DATE
+      LIMIT 100

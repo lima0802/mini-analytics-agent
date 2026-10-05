@@ -1,0 +1,29 @@
+[project]
+name = "mini-analytics-agent"
+version = "0.1.0"
+description = "Governed text-to-SQL analytics agent on Snowflake. Learning project on synthetic data."
+requires-python = ">=3.11"
+dependencies = [
+    "snowflake-connector-python[pandas]",
+    "python-dotenv",
+    "pydantic",
+    "pyyaml",
+    "sqlglot",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.uv]
+link-mode = "copy"  # OneDrive folders do not support uv's default hardlinks
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
