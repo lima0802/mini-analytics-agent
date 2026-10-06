@@ -45,3 +45,4 @@ Monday 5 Oct (answers to be filled in by Li):
 1. Your agent's SQL passed `validate_sql()`. Name three other things that still stop it from deleting data or seeing another market's rows.
 2. Why is the validator's error message returned to the LLM instead of just raising an exception, and why do we execute `result.sql` rather than the LLM's original string?
 3. A service account must query Snowflake from CI, but MFA is enforced. What are your options, and which would you pick?
+4. Why does the model never write against raw tables?

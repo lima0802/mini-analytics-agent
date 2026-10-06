@@ -9,6 +9,7 @@ dependencies = [
     "pydantic",
     "pyyaml",
     "sqlglot",
+    "langgraph>=1.2.13",
 ]
 
 [dependency-groups]
@@ -22,6 +23,7 @@ link-mode = "copy"  # OneDrive folders do not support uv's default hardlinks
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["Li"]  # Li's hand-written practice copies, not part of the agent
 target-version = "py311"
 
 [tool.pytest.ini_options]

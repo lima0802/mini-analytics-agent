@@ -76,7 +76,7 @@ relationships:
     right_table: send_performance
     join_type: inner
     relationship_type: one_to_one
-    on: email_sends.send_sk = send_performance.send_sk
+    join_condition: email_sends.send_sk = send_performance.send_sk  # not "on": YAML reads on as True
 
 # Metrics are defined once here so the LLM never invents its own formula.
 # NULLIF avoids division by zero.
