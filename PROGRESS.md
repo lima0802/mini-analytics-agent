@@ -22,22 +22,51 @@ Interview: Friday 9 Oct. Time box: 1.5 to 2 hours per day. Full plan in `CLAUDE.
 - `semantic/semantic_model.yaml`: 2 tables, relationship, 5 metrics, synonyms, sample values, 4 verified queries (Li wrote one)
 - `agent/validator.py` + `tests/test_validator.py`: parse, one statement, read-only, known tables, no `TABLE(...)` functions, row cap. 18 tests pass.
 
-## Next: Tuesday 6 Oct
+Day 2 (Tue 6 + Wed 7 Oct):
 
-- [ ] 15 min: SQL drill moved from Monday: QUALIFY + ROW_NUMBER, LAG, running total, top-N per group (Li writes, Claude reviews)
-- [ ] Tidy: copy fixes from review into practice file or delete `agent/db_li.py` (ruff fails on it); add `verified_by`/`verified_at` to Li's verified query
-- [ ] Decide the LLM provider; add `LLM_API_KEY`, `LANGSMITH_API_KEY`, `LANGSMITH_TRACING=true`, `LANGSMITH_PROJECT` to `.env` and `.env.example` (names only)
-- [ ] `agent/state.py`: typed state
-- [ ] `agent/nodes.py`: route, retrieve semantic context, generate SQL (Pydantic schema), validate, execute, synthesize, abstain
-- [ ] `agent/graph.py`: StateGraph, retry on validation/execution error (cap 2), then abstain
-- [ ] LangSmith tracing on; inspect one trace
-- [ ] Test: out of scope, ambiguous ("how many sends?"), and a DELETE attempt
-- [ ] Li writes three sentences: graph vs ReAct vs plan-and-execute
+- SQL drill (`sql/drill.sql`): QUALIFY + ROW_NUMBER, LAG, running total with frame clause, top-N per group
+- LLM provider: Anthropic, official `anthropic` SDK, model `claude-opus-5-5`. Key in a workspace-scoped
+  Console key (`ANTHROPIC_API_KEY`). Org-level keys need an `anthropic-workspace-id` header.
+- `agent/state.py`: `TypedDict` state, `errors` with `operator.add` reducer = retry history
+- `agent/nodes.py`:
+  - `generate_sql`: function calling. Tool `submit_sql` with `strict: true`, schema from Pydantic
+    `GeneratedSQL`. Forced `tool_choice` is a 400 on Opus 5.5, so the prompt asks and the code checks.
+  - `validate` (real), `execute` (Snowflake via `run_query`, `ProgrammingError` -> `errors`; Li fixed a
+    reducer double-count bug), `synthesize` (rows only, effort low, empty result answered without LLM)
+  - `call_claude()` + `@traceable`: langsmith's `wrap_anthropic` breaks on anthropic 1.x (patches the
+    removed `client.completions`), so we trace our own call site with `usage_metadata`
+- `agent/graph.py`: retry cap 2 then abstain (verified: 3 attempts, 3 errors, abstained), print full
+  state after every node (`stream_mode=["updates", "values"]`), question from the command line,
+  `request_id` in LangSmith metadata and Snowflake QUERY_TAG
+- First real end-to-end run: Claude SQL -> sqlglot -> Snowflake (only BU_UK, BU_DE via `BU_RAP`) -> answer
+- LangSmith tracing on; trace inspected: generate_sql 4.98s / 2,356 tokens, synthesize 2.05s,
+  execute 277s = waiting for the MFA code (lazy connection; cold start, not Snowflake)
+
+Lessons worth telling:
+- Synthesis once said "delivered" for an `EMAILS_SENT` column; the next run said "sent". Right numbers,
+  wrong meaning, intermittent: needs an eval on faithfulness, not just on SQL results.
+- Auth errors (`DatabaseError`) are not retried: the LLM cannot fix them. Retry only what the model can fix.
+- `load_dotenv()` does not override existing env vars, and an EMPTY inherited var still counts as set
+  (VS Code had loaded the old empty `LANGSMITH_API_KEY`). Restart VS Code after changing `.env`.
+
+## Next: Wednesday 7 Oct (evals)
+
+- [ ] `evals/evaluators.py`: `execution_match()` (order-insensitive) and `abstained_correctly()`
+- [ ] `evals/golden.yaml`: 15 verified questions, 3 to refuse or clarify
+- [ ] `evals/run_langsmith.py`: dataset + `evaluate()` with both evaluators (warm the Snowflake connection
+      first so MFA is asked once). Baseline experiment = `route` still a stub.
+- [ ] Make `route` real (LLM classifier, same function-calling pattern) = the "change one prompt"
+      experiment; compare the two experiments in the UI (the 3 refusal questions should flip)
+- [ ] `sql/03_eval_runs.sql` + `evals/run_eval.py` (EVAL_RUNS), LAG regression query
+- [ ] Break it: remove a synonym, see the regression in both places
+- [ ] Still open from Day 2: run the 3 tests (out of scope, ambiguous, DELETE) with a real `route`;
+      Li writes three sentences: graph vs ReAct vs plan-and-execute; add `verified_by`/`verified_at` to
+      Li's verified query `delivered_bu_de_august_2026`
 
 ## Later
 
-- Wednesday 7 Oct: evaluators, golden set, `EVAL_RUNS`, regression query, LangSmith experiments
-- Thursday 8 Oct: CI (ruff, pytest, eval gate), CD to prod schema, release tag, rollout talk-through
+- Thursday 8 Oct: CI (ruff, pytest, eval gate), CD to prod schema, release tag, rollout talk-through.
+  CI needs key-pair auth for Snowflake (see open action above) and a LangSmith Service Key.
 
 ## Interview questions to revisit
 

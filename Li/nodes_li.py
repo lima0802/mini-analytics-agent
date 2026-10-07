@@ -1,9 +1,8 @@
 """Graph nodes. Each node takes the state and returns ONLY the keys it changes.
 
-Real so far: retrieve_context, generate_sql (Claude, function calling), validate, execute,
-synthesize. Still a stub: route. We replace them one by one.
+Skeleton: the LLM nodes are stubs that return fixed values, so the graph runs without an LLM
+or Snowflake. `validate` is already real. We replace the stubs one by one.
 """
-
 from functools import lru_cache
 
 import anthropic
@@ -21,6 +20,7 @@ from agent.prompts import (
     format_semantic_context,
     load_semantic_model,
 )
+
 from agent.state import AgentState
 from agent.validator import load_allowed_tables, validate_sql
 
@@ -29,9 +29,10 @@ SEMANTIC_MODEL = load_semantic_model()  # read once at import, not on every ques
 
 MODEL = "claude-opus-5-5"
 
-
-class GeneratedSQL(BaseModel):
-    """Arguments of the submit_sql tool: the exact shape Claude must fill in."""
+# A Pydantic model is a Python class used to define, validate, and structure data. 
+# It's widely used in modern AI frameworks such as FastAPI, LangChain, LangGraph, OpenAI Agents SDK, and many MCP/agent frameworks.
+class GenerateSQL(BaseModel):
+    """Arguments of the submit_sql tool: the exact shape Clude must fill in."""
 
     # extra="forbid" -> "additionalProperties": false in the schema (strict tools require it)
     model_config = ConfigDict(extra="forbid")
@@ -39,16 +40,14 @@ class GeneratedSQL(BaseModel):
     reasoning: str = Field(description="One sentence: which tables, metric and filters you used.")
     sql: str = Field(description="One Snowflake SELECT statement that answers the question.")
 
-
 # The tool definition sent to Claude. The schema is generated from the Pydantic model,
 # so the model class is the single source of truth for the arguments.
 SUBMIT_SQL_TOOL = {
     "name": "submit_sql",
     "description": "Submit the single Snowflake SELECT query that answers the user's question.",
     "strict": True,  # the API guarantees Claude's arguments match input_schema
-    "input_schema": GeneratedSQL.model_json_schema(),
+    "input_schema": GenerateSQL.model_json_schema(),
 }
-
 
 @lru_cache(maxsize=1)
 def get_llm() -> anthropic.Anthropic:
@@ -56,23 +55,22 @@ def get_llm() -> anthropic.Anthropic:
     load_dotenv()
     return anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 
-
 def _trace_outputs(response) -> dict:
-    """What LangSmith stores for the llm run: the message plus token usage it can display."""
+    """what LangSmith stores for the LLM run: the message plus token usage it can display."""
     usage = response.usage
     return {
         "message": response.model_dump(),
         "usage_metadata": {
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "total_tokens": usage.input_tokens + usage.output_tokens,
+            "input_token": usage.input_tokens, 
+            "output_token": usage.output_tokens,
+            "total_token": usage.total_tokens + usage.input_tokens + usage.output_tokens,   
         },
     }
-
 
 # langsmith's wrap_anthropic() fails with anthropic 1.x (it still patches the removed
 # client.completions), so we trace the one call site ourselves. With LANGSMITH_TRACING=true,
 # every call becomes an "llm" run inside the node's trace: prompt, response, tokens, latency.
+
 @traceable(
     run_type="llm",
     name="claude",
@@ -91,15 +89,16 @@ def call_claude(**kwargs):
     )
 
 
-def route(state: AgentState) -> dict:
-    # STUB: later an LLM decides answer / clarify / out_of_scope.
+def route(state:AgentState) -> dict:
+    # STUB later an LLM decides answer / clarify/ out_of_scope
     return {"intent": "answer"}
 
-
 def retrieve_context(state: AgentState) -> dict:
-    """Semantic model as prompt text: full schema + the verified examples closest to the question."""
-    return {"context": format_semantic_context(SEMANTIC_MODEL, state["question"])}
-
+    """Semantic model as prompt text: full schema + the verified examples closest to the current question."""
+    return {
+        "context": format_semantic_context(SEMANTIC_MODEL, state["question"]
+        )
+    }
 
 def generate_sql(state: AgentState) -> dict:
     """Claude writes SQL by calling the submit_sql tool. We read the typed arguments, not free text."""
@@ -124,7 +123,7 @@ def generate_sql(state: AgentState) -> dict:
     # dict -> typed object; raises ValidationError if the arguments do not match the schema
     args = GeneratedSQL.model_validate(tool_call.input)
     return {"sql": args.sql, "sql_reasoning": args.reasoning}
-
+ 
 
 def validate(state: AgentState) -> dict:
     result = validate_sql(state["sql"], ALLOWED_TABLES)
@@ -142,7 +141,6 @@ def execute(state: AgentState) -> dict:
         return {"rows": None, "errors": [f"Execution failed: {e.msg}"]}
     # DataFrame -> list of dicts: [{"BUSINESS_UNIT": "BU_DE", "SENDS": 50}, ...]
     return {"rows": df.to_dict(orient="records")}
-
 
 def synthesize(state: AgentState) -> dict:
     """Claude writes the answer from the result rows ONLY (never from its own knowledge)."""
@@ -164,6 +162,7 @@ def synthesize(state: AgentState) -> dict:
     )
     answer = "".join(b.text for b in response.content if b.type == "text").strip()
     return {"answer": answer or "I could not summarise the result.", "abstained": False}
+ rows.", "abstained": False}
 
 
 def abstain(state: AgentState) -> dict:

@@ -1,12 +1,11 @@
 """Prompt text for the LLM nodes, and the semantic model rendered as plain text for the prompt."""
 
-import json
 import re
 from pathlib import Path
 
 import yaml
 
-SEMANTIC_MODEL_PATH = Path(__file__).parent.parent / "semantic" / "semantic_model.yaml"
+SEMANTIC_MODEL_PATH = Path(__file__).parent / "semantic_model.yaml"
 
 SQL_SYSTEM_PROMPT = """You write one Snowflake SELECT query that answers the user's question.
 
@@ -19,41 +18,24 @@ Rules:
 Data description:
 {context}"""
 
-SYNTHESIZE_SYSTEM_PROMPT = """You answer a business question from the result of a SQL query.
-
-Rules:
-- Use ONLY the numbers and values in the result rows. Do not add facts, causes, benchmarks
-  or numbers that are not in the rows. If the rows do not answer the question, say so.
-- Rates are fractions between 0 and 1: show them as percentages with one decimal.
-- The data is filtered by the user's access rights: never call a total "company-wide".
-- If the result was truncated, say the answer covers only the rows shown.
-- Two to four sentences, plain text, no markdown."""
-
-MAX_ROWS_IN_PROMPT = 50  # bound the prompt size; the validator allows up to 1000 rows
-
-
-def load_semantic_model(path: Path = SEMANTIC_MODEL_PATH) -> dict:
-    with open(path, encoding="utf-8") as f:
+def load_semantic_model(path: Path = SEMANTIC_MODEL_PATH)-> dict:
+    with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
 
 def _words(text: str) -> set[str]:
     """'What was the open rate?' -> {'what', 'was', 'the', 'open', 'rate'}"""
     return set(re.findall(r"[a-z0-9_]+", text.lower()))
 
-
 def _overlap(a: str, b: str) -> int:
     """How many distinct words two questions share. Higher = more similar."""
     return len(_words(a) & _words(b))
 
-
-def select_examples(question: str, verified_queries: list[dict], k: int = 2) -> list[dict]:
+def select_examples(question:str, verified_queries: list[dict], k: int = 2) -> list[dict]:
     """The k verified queries most similar to the question (simple word-overlap retrieval)."""
     ranked = sorted(
         verified_queries, key=lambda vq: _overlap(question, vq["question"]), reverse=True
     )
     return ranked[:k]
-
 
 def _format_column(col: dict) -> str:
     line = f"    - {col['name']} ({col['data_type']}): {col.get('description', '')}"
@@ -63,8 +45,7 @@ def _format_column(col: dict) -> str:
         line += f" Values: {', '.join(col['sample_values'])}."
     return line
 
-
-def format_semantic_context(model: dict, question: str) -> str:
+def format_semantic_context(model:dict, question:str) -> str:
     """Everything the LLM may know about the data, as compact text."""
     lines = [f"Data: {model['description'].strip()}", "", "Tables (use these full names):"]
     for table in model["tables"]:
@@ -94,7 +75,6 @@ def format_semantic_context(model: dict, question: str) -> str:
 
     return "\n".join(lines)
 
-
 def build_sql_request(question: str, previous_sql: str | None, errors: list[str]) -> str:
     """The user message for generate_sql. On a retry it also carries the last failure."""
     if not errors:
@@ -105,12 +85,3 @@ def build_sql_request(question: str, previous_sql: str | None, errors: list[str]
         f"Most recent error: {errors[-1]}\n\n"
         "Fix the error and call submit_sql again."
     )
-
-
-def build_synthesize_request(question: str, sql: str, rows: list[dict]) -> str:
-    """The user message for synthesize: the question, the SQL that ran, and the rows as JSON."""
-    shown = rows[:MAX_ROWS_IN_PROMPT]
-    truncated = f" (showing first {len(shown)} of {len(rows)})" if len(rows) > len(shown) else ""
-    # default=str: Snowflake returns Decimal and date values, which json cannot serialise itself
-    rows_json = json.dumps(shown, default=str, indent=1)
-    return f"Question: {question}\n\nSQL that ran:\n{sql}\n\nResult rows{truncated}:\n{rows_json}"
