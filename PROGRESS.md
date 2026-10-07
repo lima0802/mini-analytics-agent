@@ -49,24 +49,59 @@ Lessons worth telling:
 - `load_dotenv()` does not override existing env vars, and an EMPTY inherited var still counts as set
   (VS Code had loaded the old empty `LANGSMITH_API_KEY`). Restart VS Code after changing `.env`.
 
-## Next: Wednesday 7 Oct (evals)
+## Open governance gap (found Wed 7 Oct while writing the golden set)
 
-- [ ] `evals/evaluators.py`: `execution_match()` (order-insensitive) and `abstained_correctly()`
-- [ ] `evals/golden.yaml`: 15 verified questions, 3 to refuse or clarify
-- [ ] `evals/run_langsmith.py`: dataset + `evaluate()` with both evaluators (warm the Snowflake connection
-      first so MFA is asked once). Baseline experiment = `route` still a stub.
-- [ ] Make `route` real (LLM classifier, same function-calling pattern) = the "change one prompt"
-      experiment; compare the two experiments in the UI (the 3 refusal questions should flip)
-- [ ] `sql/03_eval_runs.sql` + `evals/run_eval.py` (EVAL_RUNS), LAG regression query
-- [ ] Break it: remove a synonym, see the regression in both places
-- [ ] Still open from Day 2: run the 3 tests (out of scope, ambiguous, DELETE) with a real `route`;
-      Li writes three sentences: graph vs ReAct vs plan-and-execute; add `verified_by`/`verified_at` to
-      Li's verified query `delivered_bu_de_august_2026`
+`BU_RAP` is attached to `EMAIL_SENDS` only. `SEND_PERFORMANCE` has no `business_unit` column and no
+policy, so `SELECT SUM(sent) FROM SEND_PERFORMANCE` returns ALL 8 markets to role PUBLIC.
+Fix (Li runs it, in `sql/02_policies.sql`): a second row access policy on `SEND_PERFORMANCE` whose body
+looks up the send's business_unit in `EMAIL_SENDS` (mapping-table pattern), or expose only a secure
+view that joins the two. Until then the golden SQL always joins through `EMAIL_SENDS`.
 
-## Later
+Day 3 (Wed 7 Oct), external eval in LangSmith:
 
-- Thursday 8 Oct: CI (ruff, pytest, eval gate), CD to prod schema, release tag, rollout talk-through.
-  CI needs key-pair auth for Snowflake (see open action above) and a LangSmith Service Key.
+- `evals/evaluators.py`: `execution_match` (compares result rows, ignores row/column order and names,
+  rounds to 4 dp, `None` for should-abstain questions) and `abstained_correctly` (Li wrote it)
+- `evals/golden.yaml`: 15 questions (12 answer, 1 out_of_scope, 1 clarify, 1 unsafe), each with a
+  `tests:` capability; none copied from the verified queries (avoids few-shot leakage). Li wrote #15.
+- `evals/run_langsmith.py`: dataset from golden.yaml (reference rows from Snowflake under PUBLIC),
+  `evaluate()` with both evaluators, git commit + model in metadata, `max_concurrency=1` (QUERY_TAG is
+  per session)
+- `route` is real: `RouteDecision` (Literal intent -> enum), runs AFTER `retrieve_context`, fails closed;
+  Li wrote the `clarify` rule. SQL prompt: "return only the columns the question asks for".
+- Experiments (one run each, all `+dirty`):
+  | experiment | abstained_correctly | execution_match | p50 |
+  |---|---|---|---|
+  | baseline (route stub) | 0.79 (3 abstain fail) | 1.00 | 5.5s |
+  | route-llm | 1.00 | 0.91 (avg question: right value + 2 extra columns) | 7.4s |
+  | cols-and-clarify | 1.00 | 1.00 | 7.5s |
+  Lessons: 100% on the first run = eval too easy; one run per experiment cannot separate a change from
+  LLM variance (use `num_repetitions=3`); refusal must be structural (route), not prose in synthesize.
+
+## Next: Thursday 8 Oct (CI/CD)
+
+Blockers and gaps for CI (check before writing `ci.yml`):
+- Snowflake from CI: `db.py` asks for an MFA code with `input()`, impossible in GitHub Actions.
+  Needs key-pair auth (admin sets `RSA_PUBLIC_KEY` on the user, see open action at the top).
+  Without it, CI can run ruff + pytest only, and the eval gate stays a local step.
+- Eval gate: `run_langsmith.py` never fails. Add a threshold check (e.g. both scores >= baseline)
+  that ends with `sys.exit(1)`, so the PR job goes red.
+- GitHub secrets: `ANTHROPIC_API_KEY` (a CI workspace key), `LANGSMITH_API_KEY` (a Service Key, not
+  a personal token), Snowflake account/user/private key.
+- Offline tests: add a pytest for the graph with fake LLM nodes (retry cap, clarify -> abstain), so CI
+  covers the graph without API keys.
+
+Plan:
+- [ ] `.github/workflows/ci.yml`: ruff + pytest on every push; eval as merge gate on PRs
+- [ ] Deploy job on merge to main: apply `sql/`, upload the semantic model to `PROD`, tag the release
+- [ ] Talk-through: Docker image, staged rollout, rollback
+
+Deferred (after CI/CD):
+- [ ] Internal eval: `sql/03_eval_runs.sql` + `evals/run_eval.py` (EVAL_RUNS), LAG regression query,
+      check both paths give the same accuracy
+- [ ] Break it: remove a synonym, see the regression
+- [ ] Fix the governance gap on `SEND_PERFORMANCE` (above)
+- [ ] Li: three sentences graph vs ReAct vs plan-and-execute; `verified_by`/`verified_at` on
+      `delivered_bu_de_august_2026`
 
 ## Interview questions to revisit
 

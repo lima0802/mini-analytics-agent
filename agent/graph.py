@@ -1,12 +1,13 @@
 """Wire the nodes into a LangGraph StateGraph.
 
-START -> route --answer--> retrieve_context -> generate_sql -> validate --ok--> execute --ok--> synthesize -> END
-           |                                       ^              |               |
-           +--clarify / out_of_scope--+            +----error-----+-----error-----+   (max MAX_RETRIES retries)
-                                      v                           |               |
-                                   abstain <------- too many -----+---------------+
-                                      |
-                                     END
+START -> retrieve_context -> route --answer--> generate_sql -> validate --ok--> execute --ok--> synthesize -> END
+                               |                   ^              |               |
+                               |                   +----error-----+-----error-----+   (max MAX_RETRIES retries)
+                               |                                  |               |
+                               +--clarify / out_of_scope--> abstain <-- too many -+---------------+
+                                                               |
+                                                              END
+route runs AFTER retrieve_context: it needs the semantic model to judge what is in scope.
 """
 
 import sys
@@ -25,7 +26,7 @@ MAX_CHARS = 200  # print_state: shorten long values (the semantic context is ~30
 
 
 def after_route(state: AgentState) -> str:
-    return "retrieve_context" if state["intent"] == "answer" else "abstain"
+    return "generate_sql" if state["intent"] == "answer" else "abstain"
 
 
 def after_validate(state: AgentState) -> str:
@@ -54,9 +55,9 @@ def build_graph():
     graph.add_node("synthesize", nodes.synthesize)
     graph.add_node("abstain", nodes.abstain)
 
-    graph.add_edge(START, "route")
-    graph.add_conditional_edges("route", after_route, ["retrieve_context", "abstain"])
-    graph.add_edge("retrieve_context", "generate_sql")
+    graph.add_edge(START, "retrieve_context")
+    graph.add_edge("retrieve_context", "route")
+    graph.add_conditional_edges("route", after_route, ["generate_sql", "abstain"])
     graph.add_edge("generate_sql", "validate")
     graph.add_conditional_edges("validate", after_validate, ["execute", "generate_sql", "abstain"])
     graph.add_conditional_edges("execute", after_execute, ["synthesize", "generate_sql", "abstain"])

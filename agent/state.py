@@ -16,6 +16,7 @@ class AgentState(TypedDict, total=False):  # total=False: keys appear as nodes f
 
     # route: can we answer this from our data?
     intent: Intent
+    route_reason: str  # one sentence from the router; for clarify, the question to ask the user
 
     # retrieve_context: the parts of the semantic model the LLM gets to see
     context: str

@@ -1,10 +1,10 @@
 """Graph nodes. Each node takes the state and returns ONLY the keys it changes.
 
-Real so far: retrieve_context, generate_sql (Claude, function calling), validate, execute,
-synthesize. Still a stub: route. We replace them one by one.
+All nodes are real. LLM nodes (route, generate_sql, synthesize) go through call_claude().
 """
 
 from functools import lru_cache
+from typing import Literal
 
 import anthropic
 import snowflake.connector
@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.db import run_query
 from agent.prompts import (
+    ROUTE_SYSTEM_PROMPT,
     SQL_SYSTEM_PROMPT,
     SYNTHESIZE_SYSTEM_PROMPT,
     build_sql_request,
@@ -47,6 +48,24 @@ SUBMIT_SQL_TOOL = {
     "description": "Submit the single Snowflake SELECT query that answers the user's question.",
     "strict": True,  # the API guarantees Claude's arguments match input_schema
     "input_schema": GeneratedSQL.model_json_schema(),
+}
+
+
+class RouteDecision(BaseModel):
+    """Arguments of the submit_route tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Literal -> "enum" in the JSON schema: Claude can only pick one of these three strings.
+    intent: Literal["answer", "clarify", "out_of_scope"]
+    reason: str = Field(description="One sentence for the user. For clarify: the question to ask.")
+
+
+SUBMIT_ROUTE_TOOL = {
+    "name": "submit_route",
+    "description": "Submit the routing decision for the user's question.",
+    "strict": True,
+    "input_schema": RouteDecision.model_json_schema(),
 }
 
 
@@ -92,8 +111,21 @@ def call_claude(**kwargs):
 
 
 def route(state: AgentState) -> dict:
-    # STUB: later an LLM decides answer / clarify / out_of_scope.
-    return {"intent": "answer"}
+    """Claude decides answer / clarify / out_of_scope BEFORE any SQL is written."""
+    response = call_claude(
+        system=ROUTE_SYSTEM_PROMPT.format(context=state["context"]),
+        messages=[{"role": "user", "content": state["question"]}],
+        tools=[SUBMIT_ROUTE_TOOL],
+        output_config={"effort": "low"},  # a 3-way classification: low effort is enough
+    )
+    tool_call = next(
+        (b for b in response.content if b.type == "tool_use" and b.name == "submit_route"), None
+    )
+    if tool_call is None:
+        # No decision came back: fail closed (refuse) rather than guess "answer".
+        return {"intent": "out_of_scope", "route_reason": "I could not classify this question."}
+    decision = RouteDecision.model_validate(tool_call.input)
+    return {"intent": decision.intent, "route_reason": decision.reason}
 
 
 def retrieve_context(state: AgentState) -> dict:
@@ -168,9 +200,10 @@ def synthesize(state: AgentState) -> dict:
 
 def abstain(state: AgentState) -> dict:
     if state.get("intent") == "clarify":
-        reason = "Your question is ambiguous. Could you rephrase it more specifically?"
+        reason = state.get("route_reason") or "Your question is ambiguous. Could you rephrase it?"
     elif state.get("intent") == "out_of_scope":
-        reason = "I can only answer questions about the email-marketing data."
+        default = "I can only answer questions about the email-marketing data."
+        reason = state.get("route_reason") or default
     else:
         reason = f"I could not produce a valid query. Last error: {state['errors'][-1]}"
     return {"answer": reason, "abstained": True}
