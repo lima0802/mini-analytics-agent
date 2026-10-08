@@ -1,0 +1,49 @@
+
+# CI: fast checks that need no secrets, no Snowflake and no LLM.
+# Job 1 (lint) and job 2 (test) run on every push and on every pull request into main.
+# Job 3 (eval merge gate) is added separately: it needs secrets and Snowflake key-pair auth.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+# Least privilege: this workflow only reads the repository.
+permission:
+  contents: read
+
+# A newer push to the same branch cancels the run that is still going (save minutes)
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff (lint + format)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: '3.13'
+          enable-venv: true
+      # --frozen: install exactly what uv.lock says, and fail if the lock is out of date.
+      # --only-group dev: ruff needs no project dependencies, so skip Snowflake, LangGraph etc.
+      - run: uv install --frozen --only-group dev
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync ruff format --check
+
+  test:
+    name: pytest (validator, no DB, no LLM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: '3.13'
+          enable-venv: true
+      - run: uv sync --frozen
+      - run: uv run --no-sync pytest -q
+ 

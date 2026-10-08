@@ -1,0 +1,74 @@
+# CI: fast checks that need no secrets, no Snowflake and no LLM.
+# Job 1 (lint) and job 2 (test) run on every push and on every pull request into main.
+# Job 3 (eval merge gate) is added separately: it needs secrets and Snowflake key-pair auth.
+
+# Workflow name, shown in the Actions tab and next to the checks on a pull request.
+name: CI
+
+# Triggers: when this workflow runs.
+on:
+  # A push to ANY branch (nothing listed under it = no filter).
+  push:
+  # A pull request whose target is main, when opened or updated. Branch protection can require
+  # this run to pass before merging: that is what makes it a merge gate.
+  pull_request:
+    branches: [main]
+
+# Rights of the GITHUB_TOKEN every job gets automatically. Least privilege: read the code only,
+# no push, no tags, no comments. (The key must be "permissions", plural: a typo makes the file invalid.)
+permissions:
+  contents: read
+
+# Runs in the same group never overlap. ${{ github.ref }} is filled in by GitHub, e.g.
+# refs/heads/day4-cicd, so each branch has its own group. A newer push to the same branch
+# cancels the run that is still going (saves minutes). The "ci-" prefix avoids clashing with
+# the group of a future deploy workflow.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Jobs run IN PARALLEL by default, each on its own fresh machine. Two separate jobs means the
+# pull request shows which check failed: style (lint) or behaviour (test).
+jobs:
+  # Job ID, used in code (e.g. "needs: lint").
+  lint:
+    # Label shown in the GitHub UI.
+    name: ruff (lint + format)
+    # A fresh Ubuntu VM, created for this job and thrown away after. Nothing carries over.
+    runs-on: ubuntu-latest
+    # Steps run IN ORDER on that VM. If one fails, the job turns red and later steps are skipped.
+    steps:
+      # "uses" runs a published action. checkout clones this repo into the (empty) VM.
+      # @v7 pins the major version, so an update of the action cannot silently change our CI.
+      - uses: actions/checkout@v7
+      # Installs uv and Python. "with" passes inputs to the action.
+      - uses: astral-sh/setup-uv@v10
+        with:
+          # Same Python as local development.
+          python-version: "3.13"
+          # Keep uv's downloaded packages between runs (keyed on uv.lock): later runs install fast.
+          enable-cache: true
+      # "run" executes a shell command. uv sync creates the virtual environment and installs packages.
+      # --frozen: install exactly what uv.lock says, and fail if the lock is out of date.
+      # --only-group dev: ruff needs no project dependencies, so skip Snowflake, LangGraph etc.
+      - run: uv sync --frozen --only-group dev
+      # uv run: run a tool inside that environment. --no-sync: do not reinstall, we just did.
+      # ruff check: lint rules (unused variables, imports, bug patterns).
+      - run: uv run --no-sync ruff check .
+      # ruff format --check: fail if any file WOULD be reformatted, without changing files.
+      - run: uv run --no-sync ruff format --check .
+
+  test:
+    name: pytest (validator, no DB, no LLM)
+    runs-on: ubuntu-latest
+    steps:
+      # Same setup as the lint job: each job starts on its own empty VM.
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      # ALL dependencies this time: the tests import agent.validator (sqlglot, pyyaml), and
+      # langsmith loads as a pytest plugin. Still --frozen: same versions as on your laptop.
+      - run: uv sync --frozen
+      - run: uv run --no-sync pytest -q
