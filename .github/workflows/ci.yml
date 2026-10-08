@@ -39,10 +39,12 @@ jobs:
     # Steps run IN ORDER on that VM. If one fails, the job turns red and later steps are skipped.
     steps:
       # "uses" runs a published action. checkout clones this repo into the (empty) VM.
-      # @v7 pins the major version, so an update of the action cannot silently change our CI.
-      - uses: actions/checkout@v7
+      # Pinned to a full commit SHA (the version is in the comment): a tag like v7 can be moved
+      # to new code by the action's owner, a commit SHA cannot. Supply-chain safety.
+      # (A tag must also exist: setup-uv publishes no "v10" tag, which failed our first run.)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Installs uv and Python. "with" passes inputs to the action.
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           # Same Python as local development.
           python-version: "3.13"
@@ -63,8 +65,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Same setup as the lint job: each job starts on its own empty VM.
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           python-version: "3.13"
           enable-cache: true
