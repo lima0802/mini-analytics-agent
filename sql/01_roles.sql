@@ -56,8 +56,8 @@ GRANT USAGE ON SCHEMA MINI_AGENT.DEV TO ROLE AGENT_RO;
 GRANT SELECT ON ALL TABLES IN SCHEMA MINI_AGENT.DEV TO ROLE AGENT_RO;
 GRANT SELECT ON ALL VIEWS IN SCHEMA MINI_AGENT.DEV TO ROLE AGENT_RO;
 
--- TODO(Li): add two grants so tables and views created LATER in MINI_AGENT.DEV
---           are also readable by AGENT_RO without re-running this script.
+GRANT SELECT ON FUTURE TABLES IN SCHEMA MINI_AGENT.DEV TO ROLE AGENT_RO;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA MINI_AGENT.DEV TO ROLE AGENT_RO;
 
 ------------------------------------------------------------------------------
 -- 4. Service user: no password, key-pair auth only

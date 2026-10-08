@@ -1,4 +1,8 @@
-"""Tests for validate_sql(). No Snowflake connection needed: the validator is pure Python."""
+"""Tests for validate_sql(). No Snowflake connection needed: the validator is pure Python.
+
+The agent calls validate_sql() on every LLM-written query (runtime guardrail); these tests check
+the validator itself on every push (CI). See "The SQL validator" in README.md.
+"""
 
 import pytest
 

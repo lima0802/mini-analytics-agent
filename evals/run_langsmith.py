@@ -22,6 +22,7 @@ from agent.db import run_query
 from agent.graph import build_graph
 from agent.nodes import MODEL
 from evals.evaluators import abstained_correctly, execution_match, normalise_value
+from evals.gate import THRESHOLDS, average_scores, failed_gates
 
 GOLDEN_PATH = Path(__file__).parent / "golden.yaml"
 DATASET_NAME = "mini-analytics-agent-golden"
@@ -85,7 +86,7 @@ def target(inputs: dict) -> dict:
         "rows": json_safe(state.get("rows")),
         "abstained": bool(state.get("abstained", False)),
         "answer": state.get("answer", ""),
-        "sql": state.get("sql", ""),
+        "sql": state.get("validated_sql"),
     }
 
 
@@ -110,3 +111,13 @@ if __name__ == "__main__":
         max_concurrency=1,
     )
     print(f"\nDone. Open the experiment '{results.experiment_name}' in LangSmith.")
+
+    # Merge gate: exit code 1 turns the CI job red and blocks the pull request.
+    averages = average_scores(results)
+    for key, minimum in THRESHOLDS.items():
+        print(f"  {key}: {averages.get(key, float('nan')):.2f}  (minimum {minimum:.2f})")
+    failures = failed_gates(averages, THRESHOLDS)
+    if failures:
+        print("GATE FAILED: " + "; ".join(failures))
+        sys.exit(1)
+    print("GATE PASSED")

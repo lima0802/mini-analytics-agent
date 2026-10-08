@@ -1,0 +1,141 @@
+# CI/CD for the agent.
+# Job 1 (lint) and job 2 (test): every push and every pull request into main. No secrets, no
+#   Snowflake, no LLM.
+# Job 3 (eval merge gate): runs locally for now (evals/run_langsmith.py exits 1 below threshold);
+#   in CI it needs Snowflake key-pair auth, which this account does not have yet.
+# Job 4 (deploy): on main only, after jobs 1 and 2 pass. Uploads the semantic model to PROD,
+#   records the release in OPS.EVAL_RUNS, tags the commit. Snowflake steps skip until the key exists.
+
+# Workflow name, shown in the Actions tab and next to the checks on a pull request.
+name: CI
+
+# Triggers: when this workflow runs.
+on:
+  # A push to ANY branch (nothing listed under it = no filter).
+  push:
+  # A pull request whose target is main, when opened or updated. Branch protection can require
+  # this run to pass before merging: that is what makes it a merge gate.
+  pull_request:
+    branches: [main]
+
+# Rights of the GITHUB_TOKEN every job gets automatically. Least privilege: read the code only,
+# no push, no tags, no comments. (The key must be "permissions", plural: a typo makes the file invalid.)
+permissions:
+  contents: read
+
+# Runs in the same group never overlap. ${{ github.ref }} is filled in by GitHub, e.g.
+# refs/heads/day4-cicd, so each branch has its own group. A newer push to the same branch
+# cancels the run that is still going (saves minutes). The "ci-" prefix avoids clashing with
+# the group of a future deploy workflow.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Jobs run IN PARALLEL by default, each on its own fresh machine. Two separate jobs means the
+# pull request shows which check failed: style (lint) or behaviour (test).
+jobs:
+  # Job ID, used in code (e.g. "needs: lint").
+  lint:
+    # Label shown in the GitHub UI.
+    name: ruff (lint + format)
+    # A fresh Ubuntu VM, created for this job and thrown away after. Nothing carries over.
+    runs-on: ubuntu-latest
+    # Steps run IN ORDER on that VM. If one fails, the job turns red and later steps are skipped.
+    steps:
+      # "uses" runs a published action. checkout clones this repo into the (empty) VM.
+      # Pinned to a full commit SHA (the version is in the comment): a tag like v7 can be moved
+      # to new code by the action's owner, a commit SHA cannot. Supply-chain safety.
+      # (A tag must also exist: setup-uv publishes no "v10" tag, which failed our first run.)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # Installs uv and Python. "with" passes inputs to the action.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          # Same Python as local development.
+          python-version: "3.13"
+          # Keep uv's downloaded packages between runs (keyed on uv.lock): later runs install fast.
+          enable-cache: true
+      # "run" executes a shell command. uv sync creates the virtual environment and installs packages.
+      # --frozen: install exactly what uv.lock says, and fail if the lock is out of date.
+      # --only-group dev: ruff needs no project dependencies, so skip Snowflake, LangGraph etc.
+      - run: uv sync --frozen --only-group dev
+      # uv run: run a tool inside that environment. --no-sync: do not reinstall, we just did.
+      # ruff check: lint rules (unused variables, imports, bug patterns).
+      - run: uv run --no-sync ruff check .
+      # ruff format --check: fail if any file WOULD be reformatted, without changing files.
+      - run: uv run --no-sync ruff format --check .
+
+  test:
+    name: pytest (validator, no DB, no LLM)
+    runs-on: ubuntu-latest
+    steps:
+      # Same setup as the lint job: each job starts on its own empty VM.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      # ALL dependencies this time: the tests import agent.validator (sqlglot, pyyaml), and
+      # langsmith loads as a pytest plugin. Still --frozen: same versions as on your laptop.
+      - run: uv sync --frozen
+      - run: uv run --no-sync pytest -q
+
+  # Job 4: deploy to PROD and tag a release. Only on main, only after lint AND test pass.
+  # A merged pull request arrives on main as a push, so "push to main" = "on merge".
+  deploy:
+    name: deploy (PROD + release tag)
+    needs: [lint, test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # GitHub Environment "production" (Settings > Environments): its secrets are readable only by
+    # jobs that deploy to it, it can be restricted to the main branch, and it can require an
+    # approval before the job starts. Every deploy appears in the repo's deployment history.
+    # Put the Snowflake secrets HERE, not in repo-level secrets.
+    environment: production
+    # Only this job may write to the repo: it pushes the release tag. Everything else stays read-only.
+    permissions:
+      contents: write
+    # Never run two deploys at once, and never cancel one halfway (unlike the CI group above).
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    env:
+      # Secrets: values live in GitHub Settings > Secrets and variables > Actions, never in the repo.
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      # Not secret: plain settings. Deploy runs as SYSADMIN (stand-in for a DEPLOYER role);
+      # the agent itself always runs as PUBLIC.
+      SNOWFLAKE_ROLE: SYSADMIN
+      SNOWFLAKE_WAREHOUSE: AGENT_WH
+      SNOWFLAKE_DATABASE: MINI_AGENT
+      SNOWFLAKE_SCHEMA: PROD
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen
+
+      # Release tag from the date and the run number: unique, sortable, e.g. v2026.10.08-12.
+      # $GITHUB_ENV makes TAG available to all later steps.
+      - name: Release tag
+        run: echo "TAG=v$(date -u +%Y.%m.%d)-${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      # Key-pair auth: CI cannot type an MFA code. Until the key secret exists, skip Snowflake
+      # with a visible notice instead of failing every merge.
+      - name: Snowflake key missing
+        if: env.SNOWFLAKE_PRIVATE_KEY == ''
+        run: echo "::notice::SNOWFLAKE_PRIVATE_KEY secret not set - skipping Snowflake deploy"
+      - name: Deploy to Snowflake PROD
+        if: env.SNOWFLAKE_PRIVATE_KEY != ''
+        run: |
+          printf '%s\n' "$SNOWFLAKE_PRIVATE_KEY" > "$RUNNER_TEMP/sf_key.p8"
+          SNOWFLAKE_PRIVATE_KEY_PATH="$RUNNER_TEMP/sf_key.p8" uv run --no-sync python -m deploy.release "$TAG"
+
+      # Tag last: a tag means "this commit is released". The key file is gone with the VM.
+      - name: Tag the release
+        run: |
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "::notice::Released $TAG"
